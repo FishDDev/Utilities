@@ -19,27 +19,36 @@ plain='\033[0m'
 
 if [ -f /etc/redhat-release ]; then
     release="centos"
-elif cat /etc/issue | grep -q -E -i "debian"; then
+elif cat /etc/issue | grep -Eqi "debian"; then
     release="debian"
-elif cat /etc/issue | grep -q -E -i "ubuntu"; then
+elif cat /etc/issue | grep -Eqi "ubuntu"; then
     release="ubuntu"
-elif cat /etc/issue | grep -q -E -i "centos|red hat|redhat"; then
+elif cat /etc/issue | grep -Eqi "centos|red hat|redhat"; then
     release="centos"
-elif cat /proc/version | grep -q -E -i "debian"; then
+elif cat /proc/version | grep -Eqi "debian"; then
     release="debian"
-elif cat /proc/version | grep -q -E -i "ubuntu"; then
+elif cat /proc/version | grep -Eqi "ubuntu"; then
     release="ubuntu"
-elif cat /proc/version | grep -q -E -i "centos|red hat|redhat"; then
+elif cat /proc/version | grep -Eqi "centos|red hat|redhat"; then
     release="centos"
 fi
 
-if [[ `getconf WORD_BIT` == "32" && `getconf LONG_BIT` == "64" ]]; then
-    deb_kernel_url="http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.9/linux-image-4.9.0-040900-generic_4.9.0-040900.201612111631_amd64.deb"
-    deb_kernel_name="linux-image-4.9.0-amd64.deb"
-else
-    deb_kernel_url="http://kernel.ubuntu.com/~kernel-ppa/mainline/v4.9/linux-image-4.9.0-040900-generic_4.9.0-040900.201612111631_i386.deb"
-    deb_kernel_name="linux-image-4.9.0-i386.deb"
-fi
+get_latest_version() {
+
+    latest_version=$(wget -qO- http://kernel.ubuntu.com/~kernel-ppa/mainline/ | awk -F'\"v' '/v[4-9].[0-9].[0-9]/{print $2}' | cut -d/ -f1 | sort -V | tail -1)
+
+    if [[ `getconf WORD_BIT` == "32" && `getconf LONG_BIT` == "64" ]]; then
+        deb_name=$(wget -qO- http://kernel.ubuntu.com/~kernel-ppa/mainline/v${latest_version}/ | grep "linux-image" | grep "generic" | awk -F'\">' '/amd64.deb/{print $2}' | cut -d'<' -f1 | head -1)
+        deb_kernel_url="http://kernel.ubuntu.com/~kernel-ppa/mainline/v${latest_version}/${deb_name}"
+        deb_kernel_name="linux-image-${latest_version}-amd64.deb"
+    else
+        deb_name=$(wget -qO- http://kernel.ubuntu.com/~kernel-ppa/mainline/v${latest_version}/ | grep "linux-image" | grep "generic" | awk -F'\">' '/i386.deb/{print $2}' | cut -d'<' -f1 | head -1)
+        deb_kernel_url="http://kernel.ubuntu.com/~kernel-ppa/mainline/v${latest_version}/${deb_name}"
+        deb_kernel_name="linux-image-${latest_version}-i386.deb"
+    fi
+
+    [ ! -z ${latest_version} ] && return 0 || return 1
+}
 
 get_opsy() {
     [ -f /etc/redhat-release ] && awk '{print ($1,$3~/^[0-9]/?$3:$4)}' /etc/redhat-release && return
@@ -123,25 +132,22 @@ install_config() {
                 exit 1
             fi
             sed -i 's/^default=.*/default=0/g' /boot/grub/grub.conf
-            echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
-            echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
-            sysctl -p >/dev/null 2>&1
         elif centosversion 7; then
             if [ ! -f "/boot/grub2/grub.cfg" ]; then
                 echo -e "${red}Error:${plain} /boot/grub2/grub.cfg not found, please check it."
                 exit 1
             fi
             grub2-set-default 0
-            echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
-            echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
-            sysctl -p >/dev/null 2>&1
         fi
     elif [[ "${release}" == "debian" || "${release}" == "ubuntu" ]]; then
-        update-grub
-        echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
-        echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
-        sysctl -p >/dev/null 2>&1
+        /usr/sbin/update-grub
     fi
+
+    sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
+    sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
+    echo "net.core.default_qdisc = fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control = bbr" >> /etc/sysctl.conf
+    sysctl -p >/dev/null 2>&1
 }
 
 install_bbr() {
@@ -154,26 +160,28 @@ install_bbr() {
 
     if [[ "${release}" == "centos" ]]; then
         install_elrepo
-        yum --enablerepo=elrepo-kernel -y install kernel-ml
+        yum --enablerepo=elrepo-kernel -y install kernel-ml kernel-ml-devel
         if [ $? -ne 0 ]; then
             echo -e "${red}Error:${plain} Install latest kernel failed, please check it."
             exit 1
         fi
-        install_config
     elif [[ "${release}" == "debian" || "${release}" == "ubuntu" ]]; then
         [[ ! -e "/usr/bin/wget" ]] && apt-get -y update && apt-get -y install wget
+        get_latest_version
+        [ $? -ne 0 ] && echo -e "${red}Error:${plain} Get latest kernel version failed." && exit 1
         wget -c -t3 -T60 -O ${deb_kernel_name} ${deb_kernel_url}
         if [ $? -ne 0 ]; then
             echo -e "${red}Error:${plain} Download ${deb_kernel_name} failed, please check it."
             exit 1
         fi
         dpkg -i ${deb_kernel_name}
-        rm -f ${deb_kernel_name}
-        install_config
+        rm -fv ${deb_kernel_name}
     else
         echo -e "${red}Error:${plain} OS is not be supported, please change to CentOS/Debian/Ubuntu and try again."
         exit 1
     fi
+
+    install_config
 }
 
 clear
