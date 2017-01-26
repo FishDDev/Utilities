@@ -27,3 +27,5 @@ echo "/usr/local/lib" > /etc/ld.so.conf.d/local.conf
 ldconfig
 cd ${cur_dir}
 rm -rf ${cur_dir}/libsodium-1.0.11  ${cur_dir}/libsodium.tar.gz
+
+echo "libsodiun install successfully!"
